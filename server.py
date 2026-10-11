@@ -245,5 +245,5 @@ if __name__ == "__main__":
     engine_app.routes.insert(0, Route("/", homepage, methods=["GET"]))
     engine_app.routes.insert(1, Route("/api/analyze-position", api_analyze_position, methods=["POST"]))
     engine_app.routes.insert(2, Route("/api/review-pgn", api_review_pgn, methods=["POST"]))
-    app = BearerAuthMiddleware(engine_app, token)
+    app = engine_app
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
