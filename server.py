@@ -14,8 +14,15 @@ import chess
 import chess.engine
 import chess.pgn
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
-mcp = FastMCP("Stockfish Chess Coach")
+# FastMCP defaults to localhost-only Host checking, which rejects requests that
+# arrive via your onrender.com hostname (HTTP 421). Access is protected by the
+# secret key instead, so the host check is turned off.
+mcp = FastMCP(
+    "Stockfish Chess Coach",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
 ENGINE_PATH = os.getenv("STOCKFISH_PATH", "/usr/games/stockfish")
 
 
@@ -216,23 +223,36 @@ async def api_review_pgn(request):
 
 
 class BearerAuthMiddleware:
-    """Require a private bearer token for all MCP HTTP requests."""
+    """Protect /mcp with CHESS_API_KEY.
+
+    Accepts either an `Authorization: Bearer <key>` header, or the key as a
+    path segment (/mcp/<key>), because Claude's custom connector form only
+    takes a URL and cannot send custom headers. The path form is rewritten
+    to /mcp before routing.
+    """
     def __init__(self, app, token):
         self.app = app
         self.token = token
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope.get("path", "").startswith("/mcp"):
-            headers = {k.lower(): v for k, v in scope.get("headers", [])}
-            expected = ("Bearer " + self.token).encode()
-            supplied = headers.get(b"authorization", b"")
-            if not secrets.compare_digest(supplied, expected):
-                body = b'{"error":"unauthorized"}'
-                await send({"type": "http.response.start", "status": 401,
-                            "headers": [(b"content-type", b"application/json"),
-                                        (b"content-length", str(len(body)).encode())]})
-                await send({"type": "http.response.body", "body": body})
-                return
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if path == "/mcp" or path.startswith("/mcp/"):
+                headers = {k.lower(): v for k, v in scope.get("headers", [])}
+                ok = secrets.compare_digest(headers.get(b"authorization", b""), ("Bearer " + self.token).encode())
+                prefix = "/mcp/" + self.token
+                if not ok and (path == prefix or path.startswith(prefix + "/")):
+                    ok = True
+                    scope = dict(scope)
+                    scope["path"] = "/mcp" + path[len(prefix):]
+                    scope["raw_path"] = scope["path"].encode()
+                if not ok:
+                    body = b'{"error":"unauthorized"}'
+                    await send({"type": "http.response.start", "status": 401,
+                                "headers": [(b"content-type", b"application/json"),
+                                            (b"content-length", str(len(body)).encode())]})
+                    await send({"type": "http.response.body", "body": body})
+                    return
         await self.app(scope, receive, send)
 
 
@@ -245,5 +265,5 @@ if __name__ == "__main__":
     engine_app.routes.insert(0, Route("/", homepage, methods=["GET"]))
     engine_app.routes.insert(1, Route("/api/analyze-position", api_analyze_position, methods=["POST"]))
     engine_app.routes.insert(2, Route("/api/review-pgn", api_review_pgn, methods=["POST"]))
-    app = engine_app
+    app = BearerAuthMiddleware(engine_app, token)
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
