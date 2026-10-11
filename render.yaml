@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: stockfish-chess-coach
+    runtime: docker
+    plan: free
+    envVars:
+      - key: PORT
+        value: "10000"
+      - key: CHESS_API_KEY
+        sync: false
